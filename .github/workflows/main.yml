@@ -1,11 +1,9 @@
-name: Build DeepRoot 2.0 APK
+name: Build DeepRoot 2.4.0 APK
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -23,45 +21,69 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Find and extract DeepRoot ZIP
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Locate Android project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' -not -path './.git/*' | head -n 1)"
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No project ZIP found in the repository root."
-            exit 1
+          if [ -f "${GITHUB_WORKSPACE}/settings.gradle.kts" ] && [ -f "${GITHUB_WORKSPACE}/app/build.gradle.kts" ]; then
+            PROJECT_DIR="$GITHUB_WORKSPACE"
+          else
+            ZIP_FILE="$(find . -maxdepth 3 -type f -name 'DeepRoot-2.4.0-Android-Source-New-Signature.zip' -print -quit)"
+            if [ -z "$ZIP_FILE" ]; then
+              ZIP_FILE="$(find . -maxdepth 3 -type f -iname '*.zip' -not -path './.git/*' -print -quit)"
+            fi
+            if [ -z "$ZIP_FILE" ]; then echo 'Android project or source ZIP not found'; exit 1; fi
+            mkdir -p "$GITHUB_WORKSPACE/unpacked"
+            unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/unpacked"
+            SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/unpacked" -type f -name settings.gradle.kts -print -quit)"
+            [ -n "$SETTINGS_FILE" ] || { echo 'settings.gradle.kts not found'; exit 1; }
+            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
           fi
-          mkdir -p "$GITHUB_WORKSPACE/unpacked"
-          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/unpacked"
-          SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/unpacked" -type f -name settings.gradle.kts -print -quit)"
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle.kts was not found inside the ZIP."
-            exit 1
-          fi
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "ERROR: app/build.gradle.kts was not found."
-            exit 1
-          fi
+          test -f "$PROJECT_DIR/app/deeproot-release-2026.jks"
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Using project directory: $PROJECT_DIR"
+          echo "Building from $PROJECT_DIR"
 
-      - name: Set up Gradle
+      - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Build Release APK
+      - name: Build Debug and signed Release APK
         env:
           PROJECT_DIR: ${{ steps.project.outputs.dir }}
-        run: gradle -p "$PROJECT_DIR" assembleRelease --no-daemon
+        run: |
+          set -euo pipefail
+          gradle -p "$PROJECT_DIR" assembleDebug assembleRelease --no-daemon
 
-      - name: Upload APK
+      - name: Verify Release APK signature
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.dir }}
+        run: |
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/release" -name '*.apk' -print -quit)"
+          test -n "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: DeepRoot-2.0-release
-          path: unpacked/**/app/build/outputs/apk/release/*.apk
+          name: DeepRoot-2.4.0-debug
+          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Signed Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepRoot-2.4.0-release-signed
+          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
