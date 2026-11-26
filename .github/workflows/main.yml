@@ -3,7 +3,12 @@ name: Build DeepRoot 2.0 APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -13,45 +18,50 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Extract DeepRoot project ZIP
+      - name: Find and extract DeepRoot ZIP
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="$(find . -maxdepth 2 -type f -iname 'DeepRoot*.zip' -not -path './.git/*' | head -n 1)"
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' -not -path './.git/*' | head -n 1)"
           if [ -z "$ZIP_FILE" ]; then
-            echo "找不到 DeepRoot 项目 ZIP，请把 DeepRoot-2.0.zip 上传到仓库根目录。"
+            echo "ERROR: No project ZIP found in the repository root."
             exit 1
           fi
-          mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
-          PROJECT_DIR="$(find extracted -type f -name settings.gradle.kts -printf '%h\n' | head -n 1)"
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ZIP 内未找到 settings.gradle.kts。"
+          mkdir -p "$GITHUB_WORKSPACE/unpacked"
+          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/unpacked"
+          SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/unpacked" -type f -name settings.gradle.kts -print -quit)"
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle.kts was not found inside the ZIP."
             exit 1
           fi
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "项目目录：$PROJECT_DIR"
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: app/build.gradle.kts was not found."
+            exit 1
+          fi
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Using project directory: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Build signed release APK
+      - name: Build Release APK
         env:
-          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+          PROJECT_DIR: ${{ steps.project.outputs.dir }}
         run: gradle -p "$PROJECT_DIR" assembleRelease --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: DeepRoot-2.0-release
-          path: ${{ steps.project.outputs.project_dir }}/app/build/outputs/apk/release/*.apk
+          path: unpacked/**/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
