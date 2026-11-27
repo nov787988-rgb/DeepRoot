@@ -1,4 +1,4 @@
-name: Build DeepRoot 2.5.0 APK
+name: Build DTU 2.5.6 APK
 
 on:
   workflow_dispatch:
